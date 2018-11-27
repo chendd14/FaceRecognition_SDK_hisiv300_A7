@@ -1,19 +1,25 @@
 # FaceRecognition SDK A7 edition, cross compiled by Ubuntu16.04LTS 32bit
+
 ### SDK授权
+
 SDK采用软授权，执行`example`，可以获取机器码。调用SetLicenseFile函数，可以设置授权文件的名称。
 
-### 人脸识别一般流程
-mermaid
-graph LR
-start[开始] --> input[输入图片，in BGR format]
-input --> face_detect[人脸检测，输出人脸框] 
-face_detect --> face_alignment[人脸对齐归一化，获取归一化人脸]
-face_alignment --> face_feature[获取人脸特征]
+### 人脸比对一般流程
+```flow
+st=>start: 开始
+op1=>operation: cv::imread，读取图片1和图片2（in BGR format）
+op2=>operation: VisionFaceDetect，获取图片1和图片2中的人脸位置
+op3=>operation: VisionFaceAlignment，归一化图片1和图片2中的人脸
+op4=>operation: VisionFaceFeature，获取图片1和图片2中的人脸特征
+op5=>operation: VisionFaceFeature，比对两人脸特征，获取相似度
+e=>end: 结束
+st->op1->op2->op3->op4->op5->e
+```
 
 ### 1.&nbsp;&nbsp;人脸检测
 ```c++
 namespace vision {
-	class VISION_API VisionFaceDetect
+    class VISION_API VisionFaceDetect
 	{
 	public:
 		/* 默认析构函数 */
@@ -166,7 +172,7 @@ void CameraTest()
 ```
 
 ----
-### 3.&nbsp;&nbsp;人脸特征提取
+### 3.&nbsp;&nbsp;人脸特征提取与比对
 ```c++
 namespace vision {
     class VISION_API VisionFaceFeature
@@ -198,64 +204,72 @@ namespace vision {
     VISION_API void destroyVisionFaceFeature(VisionFaceFeature* ptr);
 }
 ```
-示例代码
+人脸比对示例代码
 ```c++
-void CameraTest()
-{
-    VisionFaceDetect* face_detect = instantiateVisionFaceDetect();
-    VisionFaceAlignment* face_align = instantiateVisionFaceAlignment();
-    VisionFaceFeature* face_feature = instantiateVisionFaceFeature();
-    // warning, VisionFaceFeature必须进行初始化。默认的模型无法满足需求
-    // 其中ResNet224_1202_iter_260000_V3.param可以用其他的.param模型替代
-    if (!face_feature->InitV3("ResNet224_1202_iter_260000_V3.param", 0))
-    {
-        return;
-    }
+int main(int argc, char** argv) {
+    //vision::SetLicenseFile("d:/dip/license.lic");
+    if (argc == 4) {
+        std::string model_name = std::string(argv[1]);
+        std::string image1_name       = std::string(argv[2]);
+        std::string image2_name       = std::string(argv[3]);
 
-    cv::VideoCapture capture(0);
-    Mat img;
+        vision::VisionFaceDetect *   face_detect    = vision::instantiateVisionFaceDetect();    // 包含默认初始化参数，无需再次初始化
+        face_detect->SetMaxWidthGlobal(480);
+        face_detect->SetMinFaceSize(80);
+        vision::VisionFaceAlignment *face_alignment = vision::instantiateVisionFaceAlignment(); // 包含默认初始化参数，无需再次初始化
+        vision::VisionFaceFeature *  face_feature   = vision::instantiateVisionFaceFeature();   // 针对不同的使用场景，需要用特定的模型进行初始化
+        face_feature->InitV3(model_name);
 
-    while (true)
-    {
-        capture >> img;
-        std::vector<std::vector<cv::Point2f>> key_pts;
-        std::vector<cv::Rect> face_rects = face_detect->GetFaces(img, key_pts);
+        cv::Mat img1 = cv::imread(image1_name);
+        cv::Mat img2 = cv::imread(image2_name);
 
-        for (int i = 0; i < key_pts.size(); i++)
-        {
-            for (int j = 0; j < key_pts.at(i).size(); j++)
-            {
-                cv::circle(img, key_pts.at(i).at(j), 2, cv::Scalar(255, 0, 0), 2);
-            }
+        // Perform Face Detect First
+        std::vector<vision::VisionFace> faces1 = face_detect->GetMaximumFace(img1);
+        if (faces1.size() < 1) {
+            std::cout << "Failed to detect a face in " << image1_name << ", exit." << std::endl;
+            exit(-1);
+        } else {
+            std::cout << "Face rectangle in " << image1_name << " is: " << faces1[0].bbox << std::endl;
         }
 
-        std::vector<cv::Mat> norm_faces = face_align->GetAlignedFace(img, key_pts);
-        if (norm_faces.size() > 0)
-        {
-            cv::imshow("norm_face", norm_faces[0]);
-            // warning， 人脸特征提取的输入必须是归一化人脸图像
-            std::vector<float> feature = face_feature->GetFeature(norm_faces[0]);
-            for (int i = 0; i < feature.size(); i++)
-            {
-                std::cout << feature.at(i) << std::endl;
-            }
+        std::vector<vision::VisionFace> faces2 = face_detect->GetMaximumFace(img2);
+        if (faces2.size() < 1) {
+            std::cout << "Failed to detect a face in " << image2_name << ", exit." << std::endl;
+            exit(-1);
+        } else {
+            std::cout << "Face rectangle in " << image2_name << " is: " << faces2[0].bbox << std::endl;
         }
-    }
 
-    vision::destroyVisionFaceDetect(face_detect);
-    vision::destroyVisionFaceAlignment(face_align);
-    vision::destroyVisionFaceFeature(face_feature);
+        // Face Alignment
+        cv::Mat norm_face1 = face_alignment->GetAlignedFace(img1, faces1.at(0).key_pts);
+        cv::Mat norm_face2 = face_alignment->GetAlignedFace(img2, faces2.at(0).key_pts);
+
+        // Extract Face Feature
+        std::vector<float> fea1 = face_feature->GetFeature(norm_face1);
+        std::vector<float> fea2 = face_feature->GetFeature(norm_face2);
+
+        // Feature Comapre
+        std::cout << "Similarity: " << face_feature->GetScore(fea1, fea2) << std::endl;
+
+        vision::destroyVisionFaceDetect(face_detect);
+        vision::destroyVisionFaceAlignment(face_alignment);
+        vision::destroyVisionFaceFeature(face_feature);
+    } else {
+        std::string cmd = std::string(argv[0]);
+        std::cout << "Usage: " << cmd << " model_name image1 image2" << std::endl;
+    }
+    return 0;
 }
 ```
 
-----
-## General dependencies
-#### GPU Edition
-- [Cuda 8.0](https://pan.baidu.com/s/1nuI1vy5)
-- [Cudnn 5.1](https://pan.baidu.com/s/1V-okUGtn-vFoCbnfvDrthg)
+### 使用建议及注意事项
+- 根据业务场景使用`SetMinFaceSize`接口设置合理的最小人脸大小，以获取更快的人脸检测速度
+- 根据业务场景使用`SetMaxWidthGlobal`接口设置合理的检测图像最长边大小，以获取更快的人脸检测速度
+- 在嵌入式平台使用该模块，建议同比例减小`MinFaceSize`和`MaxWidthGlobal`，减少IO，加速人脸检测
+ - 两张人脸的相似度结果（比分0.5以上，说明像；比分0.65以上，比较像；比分0.75以上，非常像；该值的设定具体要参照业务场景）
 
 ----
-## Contact
+##  Contact
 chendd14 <chendd14@163.com>
 <div class="footer">
 Copyright(c) chendd14
